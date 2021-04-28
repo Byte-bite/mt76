@@ -9,9 +9,12 @@ mt7921_fw_debug_set(void *data, u64 val)
 {
 	struct mt7921_dev *dev = data;
 
-	dev->fw_debug = (u8)val;
+	mt7921_mutex_acquire(dev);
 
+	dev->fw_debug = (u8)val;
 	mt7921_mcu_fw_log_2_host(dev, dev->fw_debug);
+
+	mt7921_mutex_release(dev);
 
 	return 0;
 }
@@ -61,7 +64,7 @@ mt7921_ampdu_stat_read_phy(struct mt7921_phy *phy,
 }
 
 static int
-mt7921_tx_stats_read(struct seq_file *file, void *data)
+mt7921_tx_stats_show(struct seq_file *file, void *data)
 {
 	struct mt7921_dev *dev = file->private;
 	int stat[8], i, n;
@@ -87,19 +90,7 @@ mt7921_tx_stats_read(struct seq_file *file, void *data)
 	return 0;
 }
 
-static int
-mt7921_tx_stats_open(struct inode *inode, struct file *f)
-{
-	return single_open(f, mt7921_tx_stats_read, inode->i_private);
-}
-
-static const struct file_operations fops_tx_stats = {
-	.open = mt7921_tx_stats_open,
-	.read = seq_read,
-	.llseek = seq_lseek,
-	.release = single_release,
-	.owner = THIS_MODULE,
-};
+DEFINE_SHOW_ATTRIBUTE(mt7921_tx_stats);
 
 static int
 mt7921_queues_acq(struct seq_file *s, void *data)
@@ -239,11 +230,19 @@ static int
 mt7921_pm_set(void *data, u64 val)
 {
 	struct mt7921_dev *dev = data;
+	struct mt76_connac_pm *pm = &dev->pm;
 	struct mt76_phy *mphy = dev->phy.mt76;
+
+	if (val == pm->enable)
+		return 0;
 
 	mt7921_mutex_acquire(dev);
 
-	dev->pm.enable = val;
+	if (!pm->enable) {
+		pm->stats.last_wake_event = jiffies;
+		pm->stats.last_doze_event = jiffies;
+	}
+	pm->enable = val;
 
 	ieee80211_iterate_active_interfaces(mphy->hw,
 					    IEEE80211_IFACE_ITER_RESUME_ALL,
@@ -264,6 +263,29 @@ mt7921_pm_get(void *data, u64 *val)
 }
 
 DEFINE_DEBUGFS_ATTRIBUTE(fops_pm, mt7921_pm_get, mt7921_pm_set, "%lld\n");
+
+static int
+mt7921_pm_stats(struct seq_file *s, void *data)
+{
+	struct mt7921_dev *dev = dev_get_drvdata(s->private);
+	struct mt76_connac_pm *pm = &dev->pm;
+
+	unsigned long awake_time = pm->stats.awake_time;
+	unsigned long doze_time = pm->stats.doze_time;
+
+	if (!test_bit(MT76_STATE_PM, &dev->mphy.state))
+		awake_time += jiffies - pm->stats.last_wake_event;
+	else
+		doze_time += jiffies - pm->stats.last_doze_event;
+
+	seq_printf(s, "awake time: %14u\ndoze time: %15u\n",
+		   jiffies_to_msecs(awake_time),
+		   jiffies_to_msecs(doze_time));
+
+	seq_printf(s, "low power wakes: %9d\n", pm->stats.lp_wake);
+
+	return 0;
+}
 
 static int
 mt7921_pm_idle_timeout_set(void *data, u64 val)
@@ -288,19 +310,28 @@ mt7921_pm_idle_timeout_get(void *data, u64 *val)
 DEFINE_DEBUGFS_ATTRIBUTE(fops_pm_idle_timeout, mt7921_pm_idle_timeout_get,
 			 mt7921_pm_idle_timeout_set, "%lld\n");
 
-static int mt7921_config(void *data, u64 val)
+static int mt7921_chip_reset(void *data, u64 val)
 {
 	struct mt7921_dev *dev = data;
-	int ret;
+	int ret = 0;
 
-	mt7921_mutex_acquire(dev);
-	ret = mt76_connac_mcu_chip_config(&dev->mt76);
-	mt7921_mutex_release(dev);
+	switch (val) {
+	case 1:
+		/* Reset wifisys directly. */
+		mt7921_reset(&dev->mt76);
+		break;
+	default:
+		/* Collect the core dump before reset wifisys. */
+		mt7921_mutex_acquire(dev);
+		ret = mt76_connac_mcu_chip_config(&dev->mt76);
+		mt7921_mutex_release(dev);
+		break;
+	}
 
 	return ret;
 }
 
-DEFINE_DEBUGFS_ATTRIBUTE(fops_config, NULL, mt7921_config, "%lld\n");
+DEFINE_DEBUGFS_ATTRIBUTE(fops_reset, NULL, mt7921_chip_reset, "%lld\n");
 
 int mt7921_init_debugfs(struct mt7921_dev *dev)
 {
@@ -316,12 +347,14 @@ int mt7921_init_debugfs(struct mt7921_dev *dev)
 				    mt7921_queues_acq);
 	debugfs_create_devm_seqfile(dev->mt76.dev, "txpower_sku", dir,
 				    mt7921_txpwr);
-	debugfs_create_file("tx_stats", 0400, dir, dev, &fops_tx_stats);
+	debugfs_create_file("tx_stats", 0400, dir, dev, &mt7921_tx_stats_fops);
 	debugfs_create_file("fw_debug", 0600, dir, dev, &fops_fw_debug);
 	debugfs_create_file("runtime-pm", 0600, dir, dev, &fops_pm);
 	debugfs_create_file("idle-timeout", 0600, dir, dev,
 			    &fops_pm_idle_timeout);
-	debugfs_create_file("chip_config", 0600, dir, dev, &fops_config);
+	debugfs_create_file("chip_reset", 0600, dir, dev, &fops_reset);
+	debugfs_create_devm_seqfile(dev->mt76.dev, "runtime_pm_stats", dir,
+				    mt7921_pm_stats);
 
 	return 0;
 }
