@@ -100,6 +100,7 @@ struct mt7915_vif {
 	struct mt7915_phy *phy;
 
 	struct ieee80211_tx_queue_params queue_params[IEEE80211_NUM_ACS];
+	struct cfg80211_bitrate_mask bitrate_mask;
 };
 
 struct mib_stats {
@@ -169,6 +170,7 @@ struct mt7915_dev {
 	struct mt7915_hif *hif2;
 
 	const struct mt76_bus_ops *bus_ops;
+	struct tasklet_struct irq_tasklet;
 	struct mt7915_phy phy;
 
 	u16 chainmask;
@@ -322,6 +324,8 @@ int mt7915_mcu_add_obss_spr(struct mt7915_dev *dev, struct ieee80211_vif *vif,
                             bool enable);
 int mt7915_mcu_add_rate_ctrl(struct mt7915_dev *dev, struct ieee80211_vif *vif,
 			     struct ieee80211_sta *sta);
+int mt7915_mcu_add_he(struct mt7915_dev *dev, struct ieee80211_vif *vif,
+		      struct ieee80211_sta *sta);
 int mt7915_mcu_add_smps(struct mt7915_dev *dev, struct ieee80211_vif *vif,
 			struct ieee80211_sta *sta);
 int mt7915_set_channel(struct mt7915_phy *phy);
@@ -374,9 +378,11 @@ void mt7915_dual_hif_set_irq_mask(struct mt7915_dev *dev, bool write_reg,
 static inline void mt7915_irq_enable(struct mt7915_dev *dev, u32 mask)
 {
 	if (dev->hif2)
-		mt7915_dual_hif_set_irq_mask(dev, true, 0, mask);
+		mt7915_dual_hif_set_irq_mask(dev, false, 0, mask);
 	else
-		mt76_set_irq_mask(&dev->mt76, MT_INT_MASK_CSR, 0, mask);
+		mt76_set_irq_mask(&dev->mt76, 0, 0, mask);
+
+	tasklet_schedule(&dev->irq_tasklet);
 }
 
 static inline void mt7915_irq_disable(struct mt7915_dev *dev, u32 mask)
@@ -392,12 +398,9 @@ void mt7915_mac_reset_counters(struct mt7915_phy *phy);
 void mt7915_mac_cca_stats_reset(struct mt7915_phy *phy);
 void mt7915_mac_enable_nf(struct mt7915_dev *dev, bool ext_phy);
 void mt7915_mac_write_txwi(struct mt7915_dev *dev, __le32 *txwi,
-			   struct sk_buff *skb, struct mt76_wcid *wcid,
+			   struct sk_buff *skb, struct mt76_wcid *wcid, int pid,
 			   struct ieee80211_key_conf *key, bool beacon);
 void mt7915_mac_set_timing(struct mt7915_phy *phy);
-int mt7915_mac_fill_rx(struct mt7915_dev *dev, struct sk_buff *skb);
-void mt7915_mac_fill_rx_vector(struct mt7915_dev *dev, struct sk_buff *skb);
-void mt7915_mac_tx_free(struct mt7915_dev *dev, struct sk_buff *skb);
 int mt7915_mac_sta_add(struct mt76_dev *mdev, struct ieee80211_vif *vif,
 		       struct ieee80211_sta *sta);
 void mt7915_mac_sta_remove(struct mt76_dev *mdev, struct ieee80211_vif *vif,
@@ -417,8 +420,6 @@ void mt7915_queue_rx_skb(struct mt76_dev *mdev, enum mt76_rxq_id q,
 			 struct sk_buff *skb);
 void mt7915_sta_ps(struct mt76_dev *mdev, struct ieee80211_sta *sta, bool ps);
 void mt7915_stats_work(struct work_struct *work);
-void mt7915_txp_skb_unmap(struct mt76_dev *dev,
-			  struct mt76_txwi_cache *txwi);
 int mt76_dfs_start_rdd(struct mt7915_dev *dev, bool force);
 int mt7915_dfs_init_radar_detector(struct mt7915_phy *phy);
 void mt7915_set_stream_he_caps(struct mt7915_phy *phy);
