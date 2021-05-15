@@ -880,7 +880,11 @@ int mt76_connac_mcu_add_sta_cmd(struct mt76_phy *phy,
 		return PTR_ERR(skb);
 
 	mt76_connac_mcu_sta_basic_tlv(skb, info->vif, info->sta, info->enable);
-	if (info->enable && info->sta)
+
+	if (!info->enable)
+		goto out;
+
+	if (info->sta)
 		mt76_connac_mcu_sta_tlv(phy, skb, info->sta, info->vif,
 					info->rcpi);
 
@@ -893,17 +897,15 @@ int mt76_connac_mcu_add_sta_cmd(struct mt76_phy *phy,
 	if (IS_ERR(wtbl_hdr))
 		return PTR_ERR(wtbl_hdr);
 
-	if (info->enable) {
-		mt76_connac_mcu_wtbl_generic_tlv(dev, skb, info->vif,
-						 info->sta, sta_wtbl,
-						 wtbl_hdr);
-		mt76_connac_mcu_wtbl_hdr_trans_tlv(skb, info->vif, info->wcid,
-						   sta_wtbl, wtbl_hdr);
-		if (info->sta)
-			mt76_connac_mcu_wtbl_ht_tlv(dev, skb, info->sta,
-						    sta_wtbl, wtbl_hdr);
-	}
+	mt76_connac_mcu_wtbl_generic_tlv(dev, skb, info->vif, info->sta,
+					 sta_wtbl, wtbl_hdr);
+	mt76_connac_mcu_wtbl_hdr_trans_tlv(skb, info->vif, info->wcid,
+					   sta_wtbl, wtbl_hdr);
+	if (info->sta)
+		mt76_connac_mcu_wtbl_ht_tlv(dev, skb, info->sta, sta_wtbl,
+					    wtbl_hdr);
 
+out:
 	return mt76_mcu_skb_send_msg(dev, skb, info->cmd, true);
 }
 EXPORT_SYMBOL_GPL(mt76_connac_mcu_add_sta_cmd);
@@ -1596,6 +1598,26 @@ int mt76_connac_mcu_set_deep_sleep(struct mt76_dev *dev, bool enable)
 }
 EXPORT_SYMBOL_GPL(mt76_connac_mcu_set_deep_sleep);
 
+int mt76_connac_sta_state_dp(struct mt76_dev *dev,
+			     enum ieee80211_sta_state old_state,
+			     enum ieee80211_sta_state new_state)
+{
+	if ((old_state == IEEE80211_STA_ASSOC &&
+	     new_state == IEEE80211_STA_AUTHORIZED) ||
+	    (old_state == IEEE80211_STA_NONE &&
+	     new_state == IEEE80211_STA_NOTEXIST))
+		mt76_connac_mcu_set_deep_sleep(dev, true);
+
+	if ((old_state == IEEE80211_STA_NOTEXIST &&
+	     new_state == IEEE80211_STA_NONE) ||
+	    (old_state == IEEE80211_STA_AUTHORIZED &&
+	     new_state == IEEE80211_STA_ASSOC))
+		mt76_connac_mcu_set_deep_sleep(dev, false);
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(mt76_connac_sta_state_dp);
+
 void mt76_connac_mcu_coredump_event(struct mt76_dev *dev, struct sk_buff *skb,
 				    struct mt76_connac_coredump *coredump)
 {
@@ -1979,7 +2001,7 @@ mt76_connac_mcu_set_wow_pattern(struct mt76_dev *dev,
 	ptlv->index = index;
 
 	memcpy(ptlv->pattern, pattern->pattern, pattern->pattern_len);
-	memcpy(ptlv->mask, pattern->mask, pattern->pattern_len / 8);
+	memcpy(ptlv->mask, pattern->mask, DIV_ROUND_UP(pattern->pattern_len, 8));
 
 	return mt76_mcu_skb_send_msg(dev, skb, MCU_UNI_CMD_SUSPEND, true);
 }
@@ -2014,14 +2036,17 @@ mt76_connac_mcu_set_wow_ctrl(struct mt76_phy *phy, struct ieee80211_vif *vif,
 	};
 
 	if (wowlan->magic_pkt)
-		req.wow_ctrl_tlv.trigger |= BIT(0);
+		req.wow_ctrl_tlv.trigger |= UNI_WOW_DETECT_TYPE_MAGIC;
 	if (wowlan->disconnect)
-		req.wow_ctrl_tlv.trigger |= BIT(2);
+		req.wow_ctrl_tlv.trigger |= (UNI_WOW_DETECT_TYPE_DISCONNECT |
+					     UNI_WOW_DETECT_TYPE_BCN_LOST);
 	if (wowlan->nd_config) {
 		mt76_connac_mcu_sched_scan_req(phy, vif, wowlan->nd_config);
-		req.wow_ctrl_tlv.trigger |= BIT(5);
+		req.wow_ctrl_tlv.trigger |= UNI_WOW_DETECT_TYPE_SCH_SCAN_HIT;
 		mt76_connac_mcu_sched_scan_enable(phy, vif, suspend);
 	}
+	if (wowlan->n_patterns)
+		req.wow_ctrl_tlv.trigger |= UNI_WOW_DETECT_TYPE_BITMAP;
 
 	if (mt76_is_mmio(dev))
 		req.wow_ctrl_tlv.wakeup_hif = WOW_PCIE;
