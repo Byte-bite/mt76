@@ -456,6 +456,24 @@ mt7915_mcu_rx_csa_notify(struct mt7915_dev *dev, struct sk_buff *skb)
 }
 
 static void
+mt7915_mcu_rx_thermal_notify(struct mt7915_dev *dev, struct sk_buff *skb)
+{
+	struct mt76_phy *mphy = &dev->mt76.phy;
+	struct mt7915_mcu_thermal_notify *t;
+	struct mt7915_phy *phy;
+
+	t = (struct mt7915_mcu_thermal_notify *)skb->data;
+	if (t->ctrl.ctrl_id != THERMAL_PROTECT_ENABLE)
+		return;
+
+	if (t->ctrl.band_idx && dev->mt76.phy2)
+		mphy = dev->mt76.phy2;
+
+	phy = (struct mt7915_phy *)mphy->priv;
+	phy->throttle_state = t->ctrl.duty.duty_cycle;
+}
+
+static void
 mt7915_mcu_rx_radar_detected(struct mt7915_dev *dev, struct sk_buff *skb)
 {
 	struct mt76_phy *mphy = &dev->mt76.phy;
@@ -645,6 +663,9 @@ mt7915_mcu_rx_ext_event(struct mt7915_dev *dev, struct sk_buff *skb)
 	struct mt7915_mcu_rxd *rxd = (struct mt7915_mcu_rxd *)skb->data;
 
 	switch (rxd->ext_eid) {
+	case MCU_EXT_EVENT_THERMAL_PROTECT:
+		mt7915_mcu_rx_thermal_notify(dev, skb);
+		break;
 	case MCU_EXT_EVENT_RDD_REPORT:
 		mt7915_mcu_rx_radar_detected(dev, skb);
 		break;
@@ -2332,6 +2353,32 @@ int mt7915_mcu_add_he(struct mt7915_dev *dev, struct ieee80211_vif *vif,
 				     MCU_EXT_CMD(STA_REC_UPDATE), true);
 }
 
+static int
+mt7915_mcu_add_group(struct mt7915_dev *dev, struct ieee80211_vif *vif,
+		     struct ieee80211_sta *sta)
+{
+#define MT_STA_BSS_GROUP		1
+	struct mt7915_vif *mvif = (struct mt7915_vif *)vif->drv_priv;
+	struct mt7915_sta *msta = (struct mt7915_sta *)sta->drv_priv;
+	struct {
+		__le32 action;
+		u8 wlan_idx_lo;
+		u8 status;
+		u8 wlan_idx_hi;
+		u8 rsv0[5];
+		__le32 val;
+		u8 rsv1[8];
+	} __packed req = {
+		.action = cpu_to_le32(MT_STA_BSS_GROUP),
+		.wlan_idx_lo = to_wcid_lo(msta->wcid.idx),
+		.wlan_idx_hi = to_wcid_hi(msta->wcid.idx),
+		.val = cpu_to_le32(mvif->idx % 16),
+	};
+
+	return mt76_mcu_send_msg(&dev->mt76, MCU_EXT_CMD(SET_DRR_CTRL), &req,
+				 sizeof(req), true);
+}
+
 int mt7915_mcu_add_sta_adv(struct mt7915_dev *dev, struct ieee80211_vif *vif,
 			   struct ieee80211_sta *sta, bool enable)
 {
@@ -2341,6 +2388,10 @@ int mt7915_mcu_add_sta_adv(struct mt7915_dev *dev, struct ieee80211_vif *vif,
 		return 0;
 
 	/* must keep the order */
+	ret = mt7915_mcu_add_group(dev, vif, sta);
+	if (ret)
+		return ret;
+
 	ret = mt7915_mcu_add_txbf(dev, vif, sta, enable);
 	if (ret)
 		return ret;
@@ -3397,7 +3448,8 @@ int mt7915_mcu_set_eeprom(struct mt7915_dev *dev)
 int mt7915_mcu_get_eeprom(struct mt7915_dev *dev, u32 offset)
 {
 	struct mt7915_mcu_eeprom_info req = {
-		.addr = cpu_to_le32(round_down(offset, 16)),
+		.addr = cpu_to_le32(round_down(offset,
+				    MT7915_EEPROM_BLOCK_SIZE)),
 	};
 	struct mt7915_mcu_eeprom_info *res;
 	struct sk_buff *skb;
@@ -3411,7 +3463,7 @@ int mt7915_mcu_get_eeprom(struct mt7915_dev *dev, u32 offset)
 
 	res = (struct mt7915_mcu_eeprom_info *)skb->data;
 	buf = dev->mt76.eeprom.data + le32_to_cpu(res->addr);
-	memcpy(buf, res->data, 16);
+	memcpy(buf, res->data, MT7915_EEPROM_BLOCK_SIZE);
 	dev_kfree_skb(skb);
 
 	return 0;
@@ -3450,7 +3502,7 @@ int mt7915_mcu_apply_group_cal(struct mt7915_dev *dev)
 	u8 idx = 0, *cal = dev->cal, *eep = dev->mt76.eeprom.data;
 	u32 total = MT_EE_CAL_GROUP_SIZE;
 
-	if (!(eep[MT_EE_DO_PRE_CAL] & MT_EE_WIFI_CAL_GROUP))
+	if (1 || !(eep[MT_EE_DO_PRE_CAL] & MT_EE_WIFI_CAL_GROUP))
 		return 0;
 
 	/*
@@ -3534,7 +3586,7 @@ int mt7915_mcu_apply_tx_dpd(struct mt7915_phy *phy)
 	u8 *cal = dev->cal, *eep = dev->mt76.eeprom.data;
 	int idx;
 
-	if (!(eep[MT_EE_DO_PRE_CAL] & MT_EE_WIFI_CAL_DPD))
+	if (1 || !(eep[MT_EE_DO_PRE_CAL] & MT_EE_WIFI_CAL_DPD))
 		return 0;
 
 	idx = mt7915_dpd_freq_idx(center_freq, chandef->width);
@@ -3560,20 +3612,126 @@ int mt7915_mcu_apply_tx_dpd(struct mt7915_phy *phy)
 	return 0;
 }
 
-int mt7915_mcu_get_temperature(struct mt7915_dev *dev, int index)
+int mt7915_mcu_get_chan_mib_info(struct mt7915_phy *phy, bool chan_switch)
 {
+	/* strict order */
+	static const enum mt7915_chan_mib_offs offs[] = {
+		MIB_BUSY_TIME, MIB_TX_TIME, MIB_RX_TIME, MIB_OBSS_AIRTIME
+	};
+	struct mt76_channel_state *state = phy->mt76->chan_state;
+	struct mt76_channel_state *state_ts = &phy->state_ts;
+	struct mt7915_dev *dev = phy->dev;
+	struct mt7915_mcu_mib *res, req[4];
+	struct sk_buff *skb;
+	int i, ret;
+
+	for (i = 0; i < 4; i++) {
+		req[i].band = cpu_to_le32(phy != &dev->phy);
+		req[i].offs = cpu_to_le32(offs[i]);
+	}
+
+	ret = mt76_mcu_send_and_get_msg(&dev->mt76, MCU_EXT_CMD(GET_MIB_INFO),
+					req, sizeof(req), true, &skb);
+	if (ret)
+		return ret;
+
+	res = (struct mt7915_mcu_mib *)(skb->data + 20);
+
+	if (chan_switch)
+		goto out;
+
+#define __res_u64(s) le64_to_cpu(res[s].data)
+	state->cc_busy += __res_u64(0) - state_ts->cc_busy;
+	state->cc_tx += __res_u64(1) - state_ts->cc_tx;
+	state->cc_bss_rx += __res_u64(2) - state_ts->cc_bss_rx;
+	state->cc_rx += __res_u64(2) + __res_u64(3) - state_ts->cc_rx;
+
+out:
+	state_ts->cc_busy = __res_u64(0);
+	state_ts->cc_tx = __res_u64(1);
+	state_ts->cc_bss_rx = __res_u64(2);
+	state_ts->cc_rx = __res_u64(2) + __res_u64(3);
+#undef __res_u64
+
+	dev_kfree_skb(skb);
+
+	return 0;
+}
+
+int mt7915_mcu_get_temperature(struct mt7915_phy *phy)
+{
+	struct mt7915_dev *dev = phy->dev;
 	struct {
 		u8 ctrl_id;
 		u8 action;
-		u8 band;
+		u8 dbdc_idx;
 		u8 rsv[5];
 	} req = {
 		.ctrl_id = THERMAL_SENSOR_TEMP_QUERY,
-		.action = index,
+		.dbdc_idx = phy != &dev->phy,
 	};
 
 	return mt76_mcu_send_msg(&dev->mt76, MCU_EXT_CMD(THERMAL_CTRL), &req,
 				 sizeof(req), true);
+}
+
+int mt7915_mcu_set_thermal_throttling(struct mt7915_phy *phy, u8 state)
+{
+	struct mt7915_dev *dev = phy->dev;
+	struct {
+		struct mt7915_mcu_thermal_ctrl ctrl;
+
+		__le32 trigger_temp;
+		__le32 restore_temp;
+		__le16 sustain_time;
+		u8 rsv[2];
+	} __packed req = {
+		.ctrl = {
+			.band_idx = phy != &dev->phy,
+		},
+	};
+	int level;
+
+#define TRIGGER_TEMPERATURE	122
+#define RESTORE_TEMPERATURE	116
+#define SUSTAIN_PERIOD		10
+
+	if (!state) {
+		req.ctrl.ctrl_id = THERMAL_PROTECT_DISABLE;
+		goto out;
+	}
+
+	/* set duty cycle and level */
+	for (level = 0; level < 4; level++) {
+		int ret;
+
+		req.ctrl.ctrl_id = THERMAL_PROTECT_DUTY_CONFIG;
+		req.ctrl.duty.duty_level = level;
+		req.ctrl.duty.duty_cycle = state;
+		state = state * 4 / 5;
+
+		ret = mt76_mcu_send_msg(&dev->mt76, MCU_EXT_CMD(THERMAL_PROT),
+					&req, sizeof(req.ctrl), false);
+		if (ret)
+			return ret;
+	}
+
+	/* currently use fixed values for throttling, and would be better
+	 * to implement thermal zone for dynamic trip in the long run.
+	 */
+
+	/* set high-temperature trigger threshold */
+	req.ctrl.ctrl_id = THERMAL_PROTECT_ENABLE;
+	req.trigger_temp = cpu_to_le32(TRIGGER_TEMPERATURE);
+	req.restore_temp = cpu_to_le32(RESTORE_TEMPERATURE);
+	req.sustain_time = cpu_to_le16(SUSTAIN_PERIOD);
+
+out:
+	req.ctrl.type.protect_type = 1;
+	req.ctrl.type.trigger_type = 1;
+
+	return mt76_mcu_send_msg(&dev->mt76, MCU_EXT_CMD(THERMAL_PROT),
+				 &req, sizeof(req), false);
 }
 
 int mt7915_mcu_get_tx_rate(struct mt7915_dev *dev, u32 cmd, u16 wlan_idx)
@@ -3596,7 +3754,6 @@ int mt7915_mcu_get_tx_rate(struct mt7915_dev *dev, u32 cmd, u16 wlan_idx)
 
 int mt7915_mcu_set_txpower_sku(struct mt7915_phy *phy)
 {
-#define MT7915_SKU_RATE_NUM		161
 	struct mt7915_dev *dev = phy->dev;
 	struct mt76_phy *mphy = phy->mt76;
 	struct ieee80211_hw *hw = mphy->hw;
@@ -3644,6 +3801,39 @@ int mt7915_mcu_set_txpower_sku(struct mt7915_phy *phy)
 	return mt76_mcu_send_msg(&dev->mt76,
 				 MCU_EXT_CMD(TX_POWER_FEATURE_CTRL), &req,
 				 sizeof(req), true);
+}
+
+int mt7915_mcu_get_txpower_sku(struct mt7915_phy *phy, s8 *txpower, int len)
+{
+#define RATE_POWER_INFO	2
+	struct mt7915_dev *dev = phy->dev;
+	struct {
+		u8 format_id;
+		u8 category;
+		u8 band;
+		u8 _rsv;
+	} __packed req = {
+		.format_id = 7,
+		.category = RATE_POWER_INFO,
+		.band = phy != &dev->phy,
+	};
+	s8 res[MT7915_SKU_RATE_NUM][2];
+	struct sk_buff *skb;
+	int ret, i;
+
+	ret = mt76_mcu_send_and_get_msg(&dev->mt76,
+					MCU_EXT_CMD(TX_POWER_FEATURE_CTRL),
+					&req, sizeof(req), true, &skb);
+	if (ret)
+		return ret;
+
+	memcpy(res, skb->data + 4, sizeof(res));
+	for (i = 0; i < len; i++)
+		txpower[i] = res[i][req.band];
+
+	dev_kfree_skb(skb);
+
+	return 0;
 }
 
 int mt7915_mcu_set_test_param(struct mt7915_dev *dev, u8 param, bool test_mode,

@@ -7,7 +7,8 @@
 #include "mt76.h"
 
 #define MT76_CONNAC_SCAN_IE_LEN			600
-#define MT76_CONNAC_MAX_SCHED_SCAN_INTERVAL	10
+#define MT76_CONNAC_MAX_NUM_SCHED_SCAN_INTERVAL	 10
+#define MT76_CONNAC_MAX_TIME_SCHED_SCAN_INTERVAL U16_MAX
 #define MT76_CONNAC_MAX_SCHED_SCAN_SSID		10
 #define MT76_CONNAC_MAX_SCAN_MATCH		16
 
@@ -45,6 +46,7 @@ enum {
 
 struct mt76_connac_pm {
 	bool enable;
+	bool suspended;
 
 	spinlock_t txq_lock;
 	struct {
@@ -103,9 +105,6 @@ mt76_connac_pm_ref(struct mt76_phy *phy, struct mt76_connac_pm *pm)
 {
 	bool ret = false;
 
-	if (!pm->enable)
-		return true;
-
 	spin_lock_bh(&pm->wake.lock);
 	if (test_bit(MT76_STATE_PM, &phy->state))
 		goto out;
@@ -119,14 +118,15 @@ out:
 }
 
 static inline void
-mt76_connac_pm_unref(struct mt76_connac_pm *pm)
+mt76_connac_pm_unref(struct mt76_phy *phy, struct mt76_connac_pm *pm)
 {
-	if (!pm->enable)
-		return;
-
 	spin_lock_bh(&pm->wake.lock);
-	pm->wake.count--;
+
 	pm->last_activity = jiffies;
+	if (--pm->wake.count == 0 &&
+	    test_bit(MT76_STATE_MCU_RUNNING, &phy->state))
+		mt76_connac_power_save_sched(phy, pm);
+
 	spin_unlock_bh(&pm->wake.lock);
 }
 

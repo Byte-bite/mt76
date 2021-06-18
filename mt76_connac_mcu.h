@@ -559,6 +559,7 @@ enum {
 	MCU_CMD_SET_RATE_TX_POWER = MCU_CE_PREFIX | 0x5d,
 	MCU_CMD_SCHED_SCAN_ENABLE = MCU_CE_PREFIX | 0x61,
 	MCU_CMD_SCHED_SCAN_REQ = MCU_CE_PREFIX | 0x62,
+	MCU_CMD_GET_NIC_CAPAB = MCU_CE_PREFIX | 0x8a,
 	MCU_CMD_REG_WRITE = MCU_CE_PREFIX | 0xc0,
 	MCU_CMD_REG_READ = MCU_CE_PREFIX | MCU_QUERY_MASK | 0xc0,
 	MCU_CMD_CHIP_CONFIG = MCU_CE_PREFIX | 0xca,
@@ -575,6 +576,7 @@ enum {
 enum {
 	UNI_BSS_INFO_BASIC = 0,
 	UNI_BSS_INFO_RLM = 2,
+	UNI_BSS_INFO_BSS_COLOR = 4,
 	UNI_BSS_INFO_HE_BASIC = 5,
 	UNI_BSS_INFO_BCN_CONTENT = 7,
 	UNI_BSS_INFO_QBSS = 15,
@@ -588,6 +590,28 @@ enum {
 	UNI_OFFLOAD_OFFLOAD_ND,
 	UNI_OFFLOAD_OFFLOAD_GTK_REKEY,
 	UNI_OFFLOAD_OFFLOAD_BMC_RPY_DETECT,
+};
+
+enum {
+	MT_NIC_CAP_TX_RESOURCE,
+	MT_NIC_CAP_TX_EFUSE_ADDR,
+	MT_NIC_CAP_COEX,
+	MT_NIC_CAP_SINGLE_SKU,
+	MT_NIC_CAP_CSUM_OFFLOAD,
+	MT_NIC_CAP_HW_VER,
+	MT_NIC_CAP_SW_VER,
+	MT_NIC_CAP_MAC_ADDR,
+	MT_NIC_CAP_PHY,
+	MT_NIC_CAP_MAC,
+	MT_NIC_CAP_FRAME_BUF,
+	MT_NIC_CAP_BEAM_FORM,
+	MT_NIC_CAP_LOCATION,
+	MT_NIC_CAP_MUMIMO,
+	MT_NIC_CAP_BUFFER_MODE_INFO,
+	MT_NIC_CAP_HW_ADIE_VERSION = 0x14,
+	MT_NIC_CAP_ANTSWP = 0x16,
+	MT_NIC_CAP_WFDMA_REALLOC,
+	MT_NIC_CAP_6G,
 };
 
 #define UNI_WOW_DETECT_TYPE_MAGIC		BIT(0)
@@ -770,7 +794,7 @@ struct mt76_connac_sched_scan_req {
 	u8 intervals_num;
 	u8 scan_func; /* MT7663: BIT(0) eable random mac address */
 	struct mt76_connac_mcu_scan_channel channels[64];
-	__le16 intervals[MT76_CONNAC_MAX_SCHED_SCAN_INTERVAL];
+	__le16 intervals[MT76_CONNAC_MAX_NUM_SCHED_SCAN_INTERVAL];
 	union {
 		struct {
 			u8 random_mac[ETH_ALEN];
@@ -778,7 +802,9 @@ struct mt76_connac_sched_scan_req {
 		} mt7663;
 		struct {
 			u8 bss_idx;
-			u8 pad2[63];
+			u8 pad2[19];
+			u8 random_mac[ETH_ALEN];
+			u8 pad3[38];
 		} mt7921;
 	};
 } __packed;
@@ -787,6 +813,14 @@ struct mt76_connac_sched_scan_done {
 	u8 seq_num;
 	u8 status; /* 0: ssid found */
 	__le16 pad;
+} __packed;
+
+struct bss_info_uni_bss_color {
+	__le16 tag;
+	__le16 len;
+	u8 enable;
+	u8 bss_color;
+	u8 rsv[2];
 } __packed;
 
 struct bss_info_uni_he {
@@ -899,6 +933,7 @@ struct mt76_sta_cmd_info {
 
 	struct ieee80211_vif *vif;
 
+	bool offload_fw;
 	bool enable;
 	int cmd;
 	u8 rcpi;
@@ -1020,6 +1055,7 @@ int mt76_connac_mcu_init_download(struct mt76_dev *dev, u32 addr, u32 len,
 int mt76_connac_mcu_start_patch(struct mt76_dev *dev);
 int mt76_connac_mcu_patch_sem_ctrl(struct mt76_dev *dev, bool get);
 int mt76_connac_mcu_start_firmware(struct mt76_dev *dev, u32 addr, u32 option);
+int mt76_connac_mcu_get_nic_capability(struct mt76_phy *phy);
 
 int mt76_connac_mcu_hw_scan(struct mt76_phy *phy, struct ieee80211_vif *vif,
 			    struct ieee80211_scan_request *scan_req);
