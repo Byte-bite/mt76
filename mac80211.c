@@ -99,6 +99,21 @@ struct ieee80211_rate mt76_rates[] = {
 };
 EXPORT_SYMBOL_GPL(mt76_rates);
 
+static const struct cfg80211_sar_freq_ranges mt76_sar_freq_ranges[] = {
+	{ .start_freq = 2402, .end_freq = 2494, },
+	{ .start_freq = 5150, .end_freq = 5350, },
+	{ .start_freq = 5350, .end_freq = 5470, },
+	{ .start_freq = 5470, .end_freq = 5725, },
+	{ .start_freq = 5725, .end_freq = 5950, },
+};
+
+const struct cfg80211_sar_capa mt76_sar_capa = {
+	.type = NL80211_SAR_TYPE_POWER,
+	.num_freq_ranges = ARRAY_SIZE(mt76_sar_freq_ranges),
+	.freq_ranges = &mt76_sar_freq_ranges[0],
+};
+EXPORT_SYMBOL_GPL(mt76_sar_capa);
+
 static int mt76_led_init(struct mt76_dev *dev)
 {
 	struct device_node *np = dev->dev->of_node;
@@ -659,20 +674,19 @@ void mt76_update_survey_active_time(struct mt76_phy *phy, ktime_t time)
 }
 EXPORT_SYMBOL_GPL(mt76_update_survey_active_time);
 
-void mt76_update_survey(struct mt76_dev *dev)
+void mt76_update_survey(struct mt76_phy *phy)
 {
+	struct mt76_dev *dev = phy->dev;
 	ktime_t cur_time;
 
 	if (dev->drv->update_survey)
-		dev->drv->update_survey(dev);
+		dev->drv->update_survey(phy);
 
 	cur_time = ktime_get_boottime();
-	mt76_update_survey_active_time(&dev->phy, cur_time);
-	if (dev->phy2)
-		mt76_update_survey_active_time(dev->phy2, cur_time);
+	mt76_update_survey_active_time(phy, cur_time);
 
 	if (dev->drv->drv_flags & MT_DRV_SW_RX_AIRTIME) {
-		struct mt76_channel_state *state = dev->phy.chan_state;
+		struct mt76_channel_state *state = phy->chan_state;
 
 		spin_lock_bh(&dev->cc_lock);
 		state->cc_bss_rx += dev->cur_cc_bss_rx;
@@ -691,7 +705,7 @@ void mt76_set_channel(struct mt76_phy *phy)
 	int timeout = HZ / 5;
 
 	wait_event_timeout(dev->tx_wait, !mt76_has_tx_pending(phy), timeout);
-	mt76_update_survey(dev);
+	mt76_update_survey(phy);
 
 	phy->chandef = *chandef;
 	phy->chan_state = mt76_channel_state(phy, chandef->chan);
@@ -716,7 +730,7 @@ int mt76_get_survey(struct ieee80211_hw *hw, int idx,
 
 	mutex_lock(&dev->mutex);
 	if (idx == 0 && dev->drv->update_survey)
-		mt76_update_survey(dev);
+		mt76_update_survey(phy);
 
 	sband = &phy->sband_2g;
 	if (idx >= sband->sband.n_channels) {
@@ -1337,3 +1351,17 @@ mt76_init_queue(struct mt76_dev *dev, int qid, int idx, int n_desc,
 	return hwq;
 }
 EXPORT_SYMBOL_GPL(mt76_init_queue);
+
+u16 mt76_default_basic_rate(struct mt76_phy *phy, struct ieee80211_vif *vif)
+{
+	int i = ffs(vif->bss_conf.basic_rates) - 1, offset = 0;
+	struct ieee80211_rate *rate;
+
+	if (phy->chandef.chan->band == NL80211_BAND_5GHZ)
+		offset = 4;
+
+	rate = &mt76_rates[offset + i];
+
+	return rate->hw_value;
+}
+EXPORT_SYMBOL_GPL(mt76_default_basic_rate);

@@ -43,7 +43,6 @@ enum {
 	MCU_EXT_EVENT_ASSERT_DUMP = 0x23,
 	MCU_EXT_EVENT_RDD_REPORT = 0x3a,
 	MCU_EXT_EVENT_CSA_NOTIFY = 0x4f,
-	MCU_EXT_EVENT_RATE_REPORT = 0x87,
 };
 
 enum {
@@ -164,41 +163,6 @@ struct mt7915_mcu_eeprom_info {
 	u8 data[16];
 } __packed;
 
-struct mt7915_mcu_ra_info {
-	struct mt7915_mcu_rxd rxd;
-
-	__le32 event_id;
-	__le16 wlan_idx;
-	__le16 ru_idx;
-	__le16 direction;
-	__le16 dump_group;
-
-	__le32 suggest_rate;
-	__le32 min_rate;	/* for dynamic sounding */
-	__le32 max_rate;	/* for dynamic sounding */
-	__le32 init_rate_down_rate;
-
-	__le16 curr_rate;
-	__le16 init_rate_down_total;
-	__le16 init_rate_down_succ;
-	__le16 success;
-	__le16 attempts;
-
-	__le16 prev_rate;
-	__le16 prob_up_rate;
-	u8 no_rate_up_cnt;
-	u8 ppdu_cnt;
-	u8 gi;
-
-	u8 try_up_fail;
-	u8 try_up_total;
-	u8 suggest_wf;
-	u8 try_up_check;
-	u8 prob_up_period;
-	u8 prob_down_pending;
-} __packed;
-
-
 struct mt7915_mcu_phy_rx_info {
 	u8 category;
 	u8 rate;
@@ -209,12 +173,6 @@ struct mt7915_mcu_phy_rx_info {
 	u8 stbc;
 	u8 bw;
 };
-
-#define MT_RA_RATE_NSS			GENMASK(8, 6)
-#define MT_RA_RATE_MCS			GENMASK(3, 0)
-#define MT_RA_RATE_TX_MODE		GENMASK(12, 9)
-#define MT_RA_RATE_DCM_EN		BIT(4)
-#define MT_RA_RATE_BW			GENMASK(14, 13)
 
 struct mt7915_mcu_mib {
 	__le32 band;
@@ -318,7 +276,6 @@ enum {
 	MCU_EXT_CMD_MWDS_SUPPORT = 0x80,
 	MCU_EXT_CMD_SET_SER_TRIGGER = 0x81,
 	MCU_EXT_CMD_SCS_CTRL = 0x82,
-	MCU_EXT_CMD_RATE_CTRL = 0x87,
 	MCU_EXT_CMD_FW_DBG_CTRL = 0x95,
 	MCU_EXT_CMD_SET_RDD_TH = 0x9d,
 	MCU_EXT_CMD_SET_SPR = 0xa8,
@@ -716,6 +673,7 @@ struct wtbl_ba {
 	__le16 sn;
 	u8 ba_en;
 	u8 ba_winsize_idx;
+	/* originator & recipient */
 	__le16 ba_winsize;
 	/* recipient only */
 	u8 peer_addr[ETH_ALEN];
@@ -1072,18 +1030,18 @@ enum {
 	STA_REC_MAX_NUM
 };
 
-enum mt7915_cipher_type {
-	MT_CIPHER_NONE,
-	MT_CIPHER_WEP40,
-	MT_CIPHER_WEP104,
-	MT_CIPHER_WEP128,
-	MT_CIPHER_TKIP,
-	MT_CIPHER_AES_CCMP,
-	MT_CIPHER_CCMP_256,
-	MT_CIPHER_GCMP,
-	MT_CIPHER_GCMP_256,
-	MT_CIPHER_WAPI,
-	MT_CIPHER_BIP_CMAC_128,
+enum mcu_cipher_type {
+	MCU_CIPHER_NONE,
+	MCU_CIPHER_WEP40,
+	MCU_CIPHER_WEP104,
+	MCU_CIPHER_WEP128,
+	MCU_CIPHER_TKIP,
+	MCU_CIPHER_AES_CCMP,
+	MCU_CIPHER_CCMP_256,
+	MCU_CIPHER_GCMP,
+	MCU_CIPHER_GCMP_256,
+	MCU_CIPHER_WAPI,
+	MCU_CIPHER_BIP_CMAC_128,
 };
 
 enum {
@@ -1118,6 +1076,12 @@ enum {
 enum {
 	MT_EBF = BIT(0),	/* explicit beamforming */
 	MT_IBF = BIT(1)		/* implicit beamforming */
+};
+
+enum {
+	MT_BF_SOUNDING_ON = 1,
+	MT_BF_TYPE_UPDATE = 20,
+	MT_BF_MODULE_UPDATE = 25
 };
 
 #define MT7915_WTBL_UPDATE_MAX_SIZE	(sizeof(struct wtbl_req_hdr) +	\

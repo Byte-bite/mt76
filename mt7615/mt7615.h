@@ -20,7 +20,6 @@
 					 MT7615_MAX_INTERFACES)
 
 #define MT7615_PM_TIMEOUT		(HZ / 12)
-#define MT7615_WATCHDOG_TIME		(HZ / 10)
 #define MT7615_HW_SCAN_TIMEOUT		(HZ / 10)
 #define MT7615_RESET_TIMEOUT		(30 * HZ)
 #define MT7615_RATE_RETRY		2
@@ -461,6 +460,12 @@ static inline u32 mt7615_tx_mcu_int_mask(struct mt7615_dev *dev)
 	return MT_INT_TX_DONE(dev->mt76.q_mcu[MT_MCUQ_WM]->hw_idx);
 }
 
+static inline unsigned long
+mt7615_get_macwork_timeout(struct mt7615_dev *dev)
+{
+	return dev->pm.enable ? HZ / 3 : HZ / 10;
+}
+
 void mt7615_dma_reset(struct mt7615_dev *dev);
 void mt7615_scan_work(struct work_struct *work);
 void mt7615_roc_work(struct work_struct *work);
@@ -471,7 +476,7 @@ int mt7615_set_channel(struct mt7615_phy *phy);
 void mt7615_init_work(struct mt7615_dev *dev);
 
 int mt7615_mcu_restart(struct mt76_dev *dev);
-void mt7615_update_channel(struct mt76_dev *mdev);
+void mt7615_update_channel(struct mt76_phy *mphy);
 bool mt7615_mac_wtbl_update(struct mt7615_dev *dev, int idx, u32 mask);
 void mt7615_mac_reset_counters(struct mt7615_dev *dev);
 void mt7615_mac_cca_stats_reset(struct mt7615_phy *phy);

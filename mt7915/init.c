@@ -134,9 +134,11 @@ static int mt7915_thermal_init(struct mt7915_phy *phy)
 	cdev = thermal_cooling_device_register(wiphy_name(wiphy), phy,
 					       &mt7915_thermal_ops);
 	if (!IS_ERR(cdev)) {
-		phy->cdev = cdev;
-		sysfs_create_link(&wiphy->dev.kobj, &cdev->device.kobj,
-				  "cooling_device");
+		if (sysfs_create_link(&wiphy->dev.kobj, &cdev->device.kobj,
+				      "cooling_device") < 0)
+			thermal_cooling_device_unregister(cdev);
+		else
+			phy->cdev = cdev;
 	}
 
 	if (!IS_REACHABLE(CONFIG_HWMON))
@@ -314,20 +316,19 @@ static int mt7915_txbf_init(struct mt7915_dev *dev)
 {
 	int ret;
 
-
 	if (dev->dbdc_support) {
-		ret = mt7915_mcu_set_txbf_module(dev);
+		ret = mt7915_mcu_set_txbf(dev, MT_BF_MODULE_UPDATE);
 		if (ret)
 			return ret;
 	}
 
 	/* trigger sounding packets */
-	ret = mt7915_mcu_set_txbf_sounding(dev);
+	ret = mt7915_mcu_set_txbf(dev, MT_BF_SOUNDING_ON);
 	if (ret)
 		return ret;
 
 	/* enable eBF */
-	return mt7915_mcu_set_txbf_type(dev);
+	return mt7915_mcu_set_txbf(dev, MT_BF_TYPE_UPDATE);
 }
 
 static int mt7915_register_ext_phy(struct mt7915_dev *dev)
@@ -352,7 +353,6 @@ static int mt7915_register_ext_phy(struct mt7915_dev *dev)
 	mphy->chainmask = dev->chainmask & ~dev->mphy.chainmask;
 	mphy->antenna_mask = BIT(hweight8(mphy->chainmask)) - 1;
 
-	INIT_LIST_HEAD(&phy->stats_list);
 	INIT_DELAYED_WORK(&mphy->mac_work, mt7915_mac_work);
 
 	mt7915_eeprom_parse_band_config(phy);
@@ -482,7 +482,7 @@ static int mt7915_init_hardware(struct mt7915_dev *dev)
 	}
 
 	/* Beacon and mgmt frames should occupy wcid 0 */
-	idx = mt76_wcid_alloc(dev->mt76.wcid_mask, MT7915_WTBL_STA - 1);
+	idx = mt76_wcid_alloc(dev->mt76.wcid_mask, MT7915_WTBL_STA);
 	if (idx)
 		return -ENOSPC;
 
@@ -570,6 +570,9 @@ mt7915_set_stream_he_txbf_caps(struct ieee80211_sta_he_cap *he_cap,
 	if (nss < 2)
 		return;
 
+	/* the maximum cap is 4 x 3, (Nr, Nc) = (3, 2) */
+	elem->phy_cap_info[7] |= min_t(int, nss - 1, 2) << 3;
+
 	if (vif != NL80211_IFTYPE_AP)
 		return;
 
@@ -583,9 +586,6 @@ mt7915_set_stream_he_txbf_caps(struct ieee80211_sta_he_cap *he_cap,
 	c = IEEE80211_HE_PHY_CAP6_TRIG_SU_BEAMFORMER_FB |
 	    IEEE80211_HE_PHY_CAP6_TRIG_MU_BEAMFORMER_FB;
 	elem->phy_cap_info[6] |= c;
-
-	/* the maximum cap is 4 x 3, (Nr, Nc) = (3, 2) */
-	elem->phy_cap_info[7] |= min_t(int, nss - 1, 2) << 3;
 }
 
 static void
@@ -669,8 +669,6 @@ mt7915_init_he_caps(struct mt7915_phy *phy, enum nl80211_band band,
 
 		switch (i) {
 		case NL80211_IFTYPE_AP:
-			he_cap_elem->mac_cap_info[0] |=
-				IEEE80211_HE_MAC_CAP0_TWT_RES;
 			he_cap_elem->mac_cap_info[2] |=
 				IEEE80211_HE_MAC_CAP2_BSR;
 			he_cap_elem->mac_cap_info[4] |=
@@ -684,8 +682,6 @@ mt7915_init_he_caps(struct mt7915_phy *phy, enum nl80211_band band,
 				IEEE80211_HE_PHY_CAP6_PPE_THRESHOLD_PRESENT;
 			break;
 		case NL80211_IFTYPE_STATION:
-			he_cap_elem->mac_cap_info[0] |=
-				IEEE80211_HE_MAC_CAP0_TWT_REQ;
 			he_cap_elem->mac_cap_info[1] |=
 				IEEE80211_HE_MAC_CAP1_TF_MAC_PAD_DUR_16US;
 
@@ -793,7 +789,6 @@ int mt7915_register_device(struct mt7915_dev *dev)
 	dev->phy.dev = dev;
 	dev->phy.mt76 = &dev->mt76.phy;
 	dev->mt76.phy.priv = &dev->phy;
-	INIT_LIST_HEAD(&dev->phy.stats_list);
 	INIT_WORK(&dev->rc_work, mt7915_mac_sta_rc_work);
 	INIT_DELAYED_WORK(&dev->mphy.mac_work, mt7915_mac_work);
 	INIT_LIST_HEAD(&dev->sta_rc_list);

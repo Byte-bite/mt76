@@ -41,7 +41,7 @@ mt7921_regd_notifier(struct wiphy *wiphy,
 	mt7921_mutex_release(dev);
 }
 
-static void
+static int
 mt7921_init_wiphy(struct ieee80211_hw *hw)
 {
 	struct mt7921_phy *phy = mt7921_hw_phy(hw);
@@ -75,6 +75,14 @@ mt7921_init_wiphy(struct ieee80211_hw *hw)
 	wiphy->max_sched_scan_reqs = 1;
 	wiphy->flags |= WIPHY_FLAG_HAS_CHANNEL_SWITCH;
 	wiphy->reg_notifier = mt7921_regd_notifier;
+	wiphy->sar_capa = &mt76_sar_capa;
+
+	phy->mt76->frp = devm_kcalloc(dev->mt76.dev,
+				      wiphy->sar_capa->num_freq_ranges,
+				      sizeof(struct mt76_freq_range_power),
+				      GFP_KERNEL);
+	if (!phy->mt76->frp)
+		return -ENOMEM;
 
 	wiphy->features |= NL80211_FEATURE_SCHED_SCAN_RANDOM_MAC_ADDR |
 			   NL80211_FEATURE_SCAN_RANDOM_MAC_ADDR;
@@ -92,6 +100,8 @@ mt7921_init_wiphy(struct ieee80211_hw *hw)
 		ieee80211_hw_set(hw, CONNECTION_MONITOR);
 
 	hw->max_tx_fragments = 4;
+
+	return 0;
 }
 
 static void
@@ -105,6 +115,10 @@ mt7921_mac_init_band(struct mt7921_dev *dev, u8 band)
 
 	mt76_set(dev, MT_WF_RMAC_MIB_TIME0(band), MT_WF_RMAC_MIB_RXTIME_EN);
 	mt76_set(dev, MT_WF_RMAC_MIB_AIRTIME0(band), MT_WF_RMAC_MIB_RXTIME_EN);
+
+	/* enable MIB tx-rx time reporting */
+	mt76_set(dev, MT_MIB_SCR1(band), MT_MIB_TXDUR_EN);
+	mt76_set(dev, MT_MIB_SCR1(band), MT_MIB_RXDUR_EN);
 
 	mt76_rmw_field(dev, MT_DMA_DCR0(band), MT_DMA_DCR0_MAX_RX_LEN, 1536);
 	/* disable rx rate report by default due to hw issues */
@@ -126,6 +140,8 @@ int mt7921_mac_init(struct mt7921_dev *dev)
 				       MT_WTBL_UPDATE_ADM_COUNT_CLEAR);
 	for (i = 0; i < 2; i++)
 		mt7921_mac_init_band(dev, i);
+
+	dev->mt76.rxfilter = mt76_rr(dev, MT_WF_RFCR(0));
 
 	return mt76_connac_mcu_set_rts_thresh(&dev->mt76, 0x92b, 0);
 }
@@ -201,12 +217,16 @@ int mt7921_register_device(struct mt7921_dev *dev)
 	dev->pm.stats.last_wake_event = jiffies;
 	dev->pm.stats.last_doze_event = jiffies;
 	dev->pm.enable = true;
+	dev->pm.ds_enable = true;
 
 	ret = mt7921_init_hardware(dev);
 	if (ret)
 		return ret;
 
-	mt7921_init_wiphy(hw);
+	ret = mt7921_init_wiphy(hw);
+	if (ret)
+		return ret;
+
 	dev->mphy.sband_2g.sband.ht_cap.cap |=
 			IEEE80211_HT_CAP_LDPC_CODING |
 			IEEE80211_HT_CAP_MAX_AMSDU;
@@ -235,7 +255,13 @@ int mt7921_register_device(struct mt7921_dev *dev)
 	if (ret)
 		return ret;
 
-	return mt76_connac_mcu_set_deep_sleep(&dev->mt76, dev->pm.enable);
+	ret = mt76_connac_mcu_set_deep_sleep(&dev->mt76, dev->pm.ds_enable);
+	if (ret)
+		return ret;
+
+	dev->hw_init_done = true;
+
+	return 0;
 }
 
 void mt7921_unregister_device(struct mt7921_dev *dev)

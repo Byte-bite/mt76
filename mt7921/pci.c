@@ -17,6 +17,10 @@ static const struct pci_device_id mt7921_pci_device_table[] = {
 	{ },
 };
 
+static bool mt7921_disable_aspm;
+module_param_named(disable_aspm, mt7921_disable_aspm, bool, 0644);
+MODULE_PARM_DESC(disable_aspm, "disable PCI ASPM support");
+
 static void
 mt7921_rx_poll_complete(struct mt76_dev *mdev, enum mt76_rxq_id q)
 {
@@ -106,6 +110,7 @@ static int mt7921_pci_probe(struct pci_dev *pdev,
 		.rx_poll_complete = mt7921_rx_poll_complete,
 		.sta_ps = mt7921_sta_ps,
 		.sta_add = mt7921_mac_sta_add,
+		.sta_assoc = mt7921_mac_sta_assoc,
 		.sta_remove = mt7921_mac_sta_remove,
 		.update_survey = mt7921_update_channel,
 	};
@@ -131,7 +136,8 @@ static int mt7921_pci_probe(struct pci_dev *pdev,
 	if (ret)
 		goto err_free_pci_vec;
 
-	mt76_pci_disable_aspm(pdev);
+	if (mt7921_disable_aspm)
+		mt76_pci_disable_aspm(pdev);
 
 	mdev = mt76_alloc_device(&pdev->dev, sizeof(*dev), &mt7921_ops,
 				 &drv_ops);
@@ -207,8 +213,10 @@ static int mt7921_pci_suspend(struct pci_dev *pdev, pm_message_t state)
 			goto restore_suspend;
 	}
 
-	if (!pm->enable)
-		mt76_connac_mcu_set_deep_sleep(&dev->mt76, true);
+	/* always enable deep sleep during suspend to reduce
+	 * power consumption
+	 */
+	mt76_connac_mcu_set_deep_sleep(&dev->mt76, true);
 
 	napi_disable(&mdev->tx_napi);
 	mt76_worker_disable(&mdev->tx_worker);
@@ -251,7 +259,7 @@ restore_napi:
 	}
 	napi_enable(&mdev->tx_napi);
 
-	if (!pm->enable)
+	if (!pm->ds_enable)
 		mt76_connac_mcu_set_deep_sleep(&dev->mt76, false);
 
 	if (hif_suspend)
@@ -267,9 +275,10 @@ static int mt7921_pci_resume(struct pci_dev *pdev)
 {
 	struct mt76_dev *mdev = pci_get_drvdata(pdev);
 	struct mt7921_dev *dev = container_of(mdev, struct mt7921_dev, mt76);
+	struct mt76_connac_pm *pm = &dev->pm;
 	int i, err;
 
-	dev->pm.suspended = false;
+	pm->suspended = false;
 	err = pci_set_power_state(pdev, PCI_D0);
 	if (err)
 		return err;
@@ -300,7 +309,8 @@ static int mt7921_pci_resume(struct pci_dev *pdev)
 	napi_enable(&mdev->tx_napi);
 	napi_schedule(&mdev->tx_napi);
 
-	if (!dev->pm.enable)
+	/* restore previous ds setting */
+	if (!pm->ds_enable)
 		mt76_connac_mcu_set_deep_sleep(&dev->mt76, false);
 
 	if (!test_bit(MT76_STATE_SUSPEND, &dev->mphy.state))
