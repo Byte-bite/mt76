@@ -58,7 +58,10 @@ static int mt7921s_parse_intr(struct mt76_dev *dev, struct mt76s_intr *intr)
 	struct mt7921_sdio_intr *irq_data = sdio->intr_data;
 	int i, err;
 
+	sdio_claim_host(sdio->func);
 	err = sdio_readsb(sdio->func, irq_data, MCR_WHISR, sizeof(*irq_data));
+	sdio_release_host(sdio->func);
+
 	if (err < 0)
 		return err;
 
@@ -118,7 +121,7 @@ static int mt7921s_probe(struct sdio_func *func,
 
 	struct mt7921_dev *dev;
 	struct mt76_dev *mdev;
-	int ret, i;
+	int ret;
 
 	mdev = mt76_alloc_device(&func->dev, sizeof(*dev), &mt7921_ops,
 				 &drv_ops);
@@ -149,16 +152,6 @@ static int mt7921s_probe(struct sdio_func *func,
 	if (!mdev->sdio.intr_data) {
 		ret = -ENOMEM;
 		goto error;
-	}
-
-	for (i = 0; i < ARRAY_SIZE(mdev->sdio.xmit_buf); i++) {
-		mdev->sdio.xmit_buf[i] = devm_kmalloc(mdev->dev,
-						      MT76S_XMIT_BUF_SZ,
-						      GFP_KERNEL);
-		if (!mdev->sdio.xmit_buf[i]) {
-			ret = -ENOMEM;
-			goto error;
-		}
 	}
 
 	ret = mt76s_alloc_rx_queue(mdev, MT_RXQ_MAIN);
@@ -278,7 +271,6 @@ static int mt7921s_resume(struct device *__dev)
 	struct mt76_dev *mdev = &dev->mt76;
 	int err;
 
-	pm->suspended = false;
 	clear_bit(MT76_STATE_SUSPEND, &mdev->phy.state);
 
 	err = mt7921_mcu_drv_pmctrl(dev);
@@ -294,7 +286,13 @@ static int mt7921s_resume(struct device *__dev)
 	if (!pm->ds_enable)
 		mt76_connac_mcu_set_deep_sleep(mdev, false);
 
-	return mt76_connac_mcu_set_hif_suspend(mdev, false);
+	err = mt76_connac_mcu_set_hif_suspend(mdev, false);
+	if (err)
+		return err;
+
+	pm->suspended = false;
+
+	return err;
 }
 
 static const struct dev_pm_ops mt7921s_pm_ops = {
